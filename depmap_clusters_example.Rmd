@@ -1,0 +1,88 @@
+---
+title: "Clustering Anchor Hits"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Setup
+Load our libraries first
+```{r}
+list.of.packages <- c("tidyverse", "here", "reshape2", "ggraph", "tidygraph")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+library(here)
+library(tidyverse)
+library(reshape2)
+library(ggraph)
+library(tidygraph)
+```
+
+# Load data and set parameters
+The gene hits data must have a 'Gene ID' column with NCBI gene ID's. All other columns are treated as metainformation.
+```{r}
+gene_hits <- read_csv(here('data','PARP1_gene_hits.csv'))
+head(gene_hits)
+```
+ Gene effect scores can be downloaded from the [depmap](https://depmap.org/portal/download/).
+```{r}
+depmap_cutoff <- 0.2 # Correlation cutoff
+depmap_data <- read_csv(here('data', 'Achilles_gene_effect.csv')) %>%
+    rename(cell = X1)
+depmap_data[1:10,1:10]
+```
+
+# Create Network
+Now we want to extract the relevant columns and create our network.
+
+```{r}
+depmap_ids <- str_extract(colnames(depmap_data), '(?<=\\()[0-9]*')
+relevant_columns <- depmap_ids %in% gene_hits$`Gene ID`
+relevant_depmap <- depmap_data[,relevant_columns]
+correlation_mat <- cor(relevant_depmap, use ='pairwise.complete.obs') # use pairwise complete to allow for NA's for XX cells
+# Remove duplicate and self edges
+correlation_mat[abs(correlation_mat) < depmap_cutoff] <- NA 
+diag(correlation_mat) <- NA
+melted_cors <- melt(correlation_mat, na.rm = TRUE, value.name = 'correlation')
+head(melted_cors)
+```
+
+```{r}
+depmap_net <- as_tbl_graph(melted_cors, directed = FALSE) %>% # Turn the edge table into a tbl graph for easy manipulation 
+  activate(nodes) %>%
+  mutate(`Depmap Gene Name` = word(name), 
+         `Gene ID` = as.numeric(str_extract(name, '(?<=\\()[0-9]*'))) %>%
+  inner_join(gene_hits)
+depmap_net
+```
+
+# Clustering and Visualization
+The [tidygraph](https://github.com/thomasp85/tidygraph) package has a wide array of functionality for analyzing networks. Here we will cluster our network and visualize one of the clusters using ggraph. 
+
+```{r}
+node_weight = 'all' # Which column of metadata to size nodes by 
+clustered_depmap_net <- depmap_net %>%
+  activate(nodes) %>%
+  mutate(group = group_louvain(weights = abs(correlation)))
+cluster <- clustered_depmap_net %>%
+  filter(group == 2)
+ggraph(cluster, layout = 'kk') +
+  geom_edge_link(aes(color = as.factor(sign(correlation)), 
+                     width = abs(correlation))) +
+  scale_edge_width(range = c(0.3,2)) +
+  scale_edge_color_manual(values = c(`-1` = 'pink', `1` = 'skyblue')) +
+  theme_void() +
+  labs(edge_width = 'Correlation', edge_color = 'Edge Sign') +
+  geom_node_point(aes(size = abs(all),
+                      color = as.factor(sign(all))), 
+                  fill = 'white', pch = 21) +
+  scale_color_manual(values = c(`-1` = '#ef8a62', `1` = '#67a9cf')) +
+  scale_size(range = c(1, 4)) + 
+  labs(color = 'Node Sign', size = 'Score') +
+  geom_node_text(aes(label = name), size = 3, 
+                                    repel = TRUE, point.padding = 0, 
+                                    min.segment.length = 0.1)
+```
+
+
+
